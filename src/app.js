@@ -7,18 +7,25 @@ import { Muxer as MP4Muxer, ArrayBufferTarget as MP4Target } from 'mp4-muxer';
 import { Muxer as WebMMuxer, ArrayBufferTarget as WebMTarget } from 'webm-muxer';
 import workerCode from './gif-worker.js?worker';
 import { setWebMDuration } from './webm-duration.js';
+import { t, locale, setLanguage, translateDOM, localizedError } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
 const rad = THREE.MathUtils.degToRad;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const TAU = Math.PI * 2;
-const status = (message, error = false) => { $('status').textContent = message; $('status').classList.toggle('error', error); };
-const cancelled = () => new DOMException('Экспорт отменён', 'AbortError');
+let statusMessage = { key: 'ready', values: {}, error: false };
+function renderStatus() {
+  $('status').textContent = t(statusMessage.key, statusMessage.values);
+  $('status').classList.toggle('error', statusMessage.error);
+}
+function status(key, values = {}, error = false) { statusMessage = { key, values, error }; renderStatus(); }
+translateDOM(); renderStatus();
+const cancelled = () => new DOMException(t('cancelledError'), 'AbortError');
 let renderer;
 try {
   renderer = new THREE.WebGLRenderer({ canvas: $('canvas'), antialias: true, alpha: true, preserveDrawingBuffer: true });
 } catch (e) {
-  status('Не удалось включить 3D. Откройте файл в Edge или Chrome и включите аппаратное ускорение в настройках браузера.', true);
+  status('webglFailed', {}, true);
   $('export').disabled = true; $('open').disabled = true;
   throw e;
 }
@@ -55,6 +62,24 @@ ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground)
 let busy = false, loading = false, playing = !matchMedia('(prefers-reduced-motion: reduce)').matches;
 let baseName = 'demo-rook', currentModel = null, modelRadius = 1, exportJob = null;
 let resultUrl = null, disabledBefore = [], lastTime = performance.now();
+let modelInfo = null, resultInfo = null;
+let progressMessage = { key: 'prepare', values: {} };
+const number = (value) => value.toLocaleString(locale(), { maximumFractionDigits: 2 });
+function renderModelInfo() {
+  if (!modelInfo) return;
+  $('filename').textContent = modelInfo.demo ? t('demoName') : modelInfo.name;
+  $('model-info').textContent = t('modelInfo', { triangles: number(modelInfo.triangles), x: number(modelInfo.x), y: number(modelInfo.y), z: number(modelInfo.z) });
+}
+function renderResult() {
+  if (!resultInfo) return;
+  $('download').textContent = t('downloadFormat', { format: resultInfo.format.toUpperCase() });
+  $('result-info').textContent = t(resultInfo.format === 'png' ? 'resultStill' : 'resultAnimation', { ...resultInfo, size: number(resultInfo.bytes / 1024 / 1024) });
+}
+function refreshLanguage() {
+  translateDOM(); renderStatus(); renderModelInfo(); renderResult();
+  $('progress-text').textContent = t(progressMessage.key, progressMessage.values);
+  setPlaying(playing); updateExportNote(); updateLabels(); resize();
+}
 
 function dimensions() {
   const aspect = Number($('aspect').value), edge = Number($('size').value);
@@ -97,7 +122,7 @@ function updateAppearance(forceOpaque = false) {
   ground.visible = $('shadow').checked;
 }
 function setPlaying(value) {
-  playing = value; $('play').textContent = playing ? 'Ⅱ Пауза' : '▶ Вращать';
+  playing = value; $('play').textContent = t(playing ? 'pause' : 'play');
 }
 function setStartAngle() { spin.rotation.y = -rad(Number($('angle').value)); }
 function resetView() {
@@ -127,11 +152,11 @@ function disposeModel(model) {
   });
   geos.forEach((g) => g.dispose()); mats.forEach((m) => m.dispose());
 }
-function installModel(model, name, stl = false) {
+function installModel(model, name, stl = false, demo = false) {
   const box = new THREE.Box3().setFromObject(model);
   const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
   const max = Math.max(size.x, size.y, size.z);
-  if (!Number.isFinite(max) || max <= 0) throw new Error('В файле нет объёмной геометрии.');
+  if (!Number.isFinite(max) || max <= 0) throw localizedError('emptyGeometry');
   let triangles = 0, valid = true;
   model.traverse((obj) => {
     if (!obj.isMesh) { if (obj.isLine || obj.isPoints) obj.visible = false; return; }
@@ -139,7 +164,7 @@ function installModel(model, name, stl = false) {
     for (let i = 0; i < attr.array.length; i++) if (!Number.isFinite(attr.array[i])) { valid = false; break; }
     triangles += (obj.geometry.index ? obj.geometry.index.count : attr.count) / 3;
   });
-  if (!valid || !triangles) throw new Error('Некорректные координаты или отсутствуют треугольники.');
+  if (!valid || !triangles) throw localizedError('invalidGeometry');
   const oldMats = new Set();
   model.traverse((obj) => {
     if (!obj.isMesh) return;
@@ -153,35 +178,34 @@ function installModel(model, name, stl = false) {
   disposeModel(currentModel); orientation.clear(); currentModel = wrapper;
   orientation.quaternion.identity(); if (stl) orientation.rotation.x = -Math.PI / 2;
   orientation.add(wrapper); baseName = name.replace(/\.[^.]+$/, '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') || 'model';
-  $('filename').textContent = name;
-  const fmt = (n) => n.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
-  $('model-info').textContent = `${Math.round(triangles).toLocaleString('ru-RU')} треугольников · ${fmt(size.x)} × ${fmt(size.y)} × ${fmt(size.z)} ед.`;
+  modelInfo = { name, demo, triangles: Math.round(triangles), x: size.x, y: size.y, z: size.z };
+  renderModelInfo();
   recenterOrientation(); resetView();
 }
 
 async function loadFile(file) {
   if (!file || busy || loading) return;
   const ext = file.name.split('.').pop().toLowerCase();
-  if (!['stl', 'obj'].includes(ext)) { status('Поддерживаются файлы .stl и .obj.', true); return; }
-  if (file.size > 200 * 1024 * 1024) { status('Файл больше 200 МБ. Используйте более лёгкую модель.', true); return; }
-  loading = true; lockUI(true); status(`Открываю ${file.name}…`); await tick();
+  if (!['stl', 'obj'].includes(ext)) { status('supportedFiles', {}, true); return; }
+  if (file.size > 200 * 1024 * 1024) { status('fileTooLarge', {}, true); return; }
+  loading = true; lockUI(true); status('opening', { name: file.name }); await tick();
   let model;
   try {
     if (ext === 'stl') {
       const bytes = await file.arrayBuffer();
-      if (bytes.byteLength < 84) throw new Error('Файл STL пустой или повреждён.');
+      if (bytes.byteLength < 84) throw localizedError('invalidSTL');
       const header = new TextDecoder().decode(bytes.slice(0, 80));
       const count = new DataView(bytes).getUint32(80, true);
-      if (!/^.{0,4}solid/i.test(header) && 84 + count * 50 > bytes.byteLength) throw new Error('Бинарный STL обрезан или имеет неверное число треугольников.');
+      if (!/^.{0,4}solid/i.test(header) && 84 + count * 50 > bytes.byteLength) throw localizedError('truncatedSTL');
       const geometry = new STLLoader().parse(bytes);
       geometry.computeVertexNormals();
       model = new THREE.Mesh(geometry, material);
     } else model = new OBJLoader().parse(await file.text());
     installModel(model, file.name, ext === 'stl');
-    status(`Модель открыта. ${ext === 'stl' ? 'Ось Z направлена вверх; при необходимости поверните модель кнопками X / Y / Z.' : 'OBJ отображается одноцветным, без внешних текстур.'}`);
+    status(ext === 'stl' ? 'openedSTL' : 'openedOBJ');
   } catch (e) {
     if (model) disposeModel(model);
-    status(`Не удалось открыть модель: ${e.message}`, true);
+    status('openFailed', { error: e }, true);
   } finally { loading = false; lockUI(false); $('file').value = ''; }
 }
 function loadDemo() {
@@ -193,23 +217,26 @@ function loadDemo() {
     const a = i * TAU / 6, tooth = new THREE.Mesh(new THREE.BoxGeometry(.26, .25, .19), material);
     tooth.position.set(Math.sin(a) * .40, 2.005, Math.cos(a) * .40); tooth.rotation.y = a; model.add(tooth);
   }
-  installModel(model, 'Демонстрационная ладья', false); baseName = 'demo-rook';
+  installModel(model, 'demo-rook', false, true); baseName = 'demo-rook';
 }
 function lockUI(value) {
   if (value) {
-    disabledBefore = [...document.querySelectorAll('#settings button, #settings input, #settings select, .export-fields button, .export-fields select, .viewer-controls button')].map((el) => [el, el.disabled]);
+    disabledBefore = [...document.querySelectorAll('#language, #settings button, #settings input, #settings select, .export-fields button, .export-fields select, .viewer-controls button')].map((el) => [el, el.disabled]);
     disabledBefore.forEach(([el]) => { el.disabled = true; }); controls.enabled = false;
   } else { disabledBefore.forEach(([el, was]) => { el.disabled = was; }); controls.enabled = true; disabledBefore = []; }
   document.body.classList.toggle('busy', value);
 }
-function progress(value, text) { $('progress').value = value; $('progress-text').textContent = text; }
+function progress(value, key, values = {}) {
+  progressMessage = { key, values };
+  $('progress').value = value; $('progress-text').textContent = t(key, values);
+}
 function checkCancel() { if (exportJob?.cancel) throw cancelled(); }
-function saveResult(blob, extension, description) {
+function saveResult(blob, extension, details) {
   if (resultUrl) URL.revokeObjectURL(resultUrl);
   resultUrl = URL.createObjectURL(blob);
   const a = $('download'); a.href = resultUrl; a.download = `${baseName}.${extension}`;
-  a.textContent = `↓ Скачать ${extension.toUpperCase()} ещё раз`;
-  $('result-info').textContent = `${description} · ${(blob.size / 1024 / 1024).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} МБ`;
+  resultInfo = { ...details, format: extension, bytes: blob.size };
+  renderResult();
   $('result').hidden = false; a.click();
 }
 function makeWorker() {
@@ -219,7 +246,7 @@ function makeWorker() {
   return (message, transfers = []) => new Promise((resolve, reject) => {
     checkCancel(); exportJob.reject = reject;
     worker.onmessage = (ev) => { exportJob.reject = null; ev.data.error ? reject(new Error(ev.data.error)) : resolve(ev.data); };
-    worker.onerror = (ev) => { exportJob.reject = null; reject(new Error(ev.message || 'Ошибка кодировщика GIF.')); };
+    worker.onerror = (ev) => { exportJob.reject = null; reject(ev.message ? new Error(ev.message) : localizedError('gifEncoderFailed')); };
     worker.postMessage(message, transfers);
   });
 }
@@ -236,7 +263,7 @@ async function exportGIF(w, h, frames, fps, start, dir) {
     checkCancel(); renderFrame(i, sampleCount, start, dir, false);
     sc.clearRect(0, 0, sampleCanvas.width, sampleCanvas.height); sc.drawImage(renderer.domElement, 0, 0, sampleCanvas.width, sampleCanvas.height);
     chunks.push(sc.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height).data);
-    progress(i / sampleCount * 0.08, 'Подбираю общую палитру GIF…'); await tick();
+    progress(i / sampleCount * 0.08, 'gifPalette'); await tick();
   }
   const samples = new Uint8Array(chunks.reduce((sum, a) => sum + a.length, 0));
   let offset = 0; for (const chunk of chunks) { samples.set(chunk, offset); offset += chunk.length; }
@@ -250,20 +277,20 @@ async function exportGIF(w, h, frames, fps, start, dir) {
     // GIF stores centiseconds; distribute rounding so the total duration is exact.
     const delay = (Math.round((i + 1) * 100 / fps) - Math.round(i * 100 / fps)) * 10;
     await rpc({ type: 'frame', pixels: pixels.buffer, width: w, height: h, delay }, [pixels.buffer]);
-    progress(.08 + .90 * (i + 1) / frames, `GIF: кадр ${i + 1} из ${frames}`);
+    progress(.08 + .90 * (i + 1) / frames, 'frameProgress', { format: 'GIF', frame: i + 1, frames });
   }
   checkCancel(); const result = await rpc({ type: 'finish' });
   return new Blob([result.bytes], { type: 'image/gif' });
 }
 async function selectVideoConfig(format, w, h, fps) {
-  if (!('VideoEncoder' in window)) throw new Error('В этом браузере недоступен экспорт видео. Откройте приложение в современном Edge / Chrome или сохраните GIF.');
+  if (!('VideoEncoder' in window)) throw localizedError('videoUnavailable');
   const codecs = format === 'mp4' ? ['avc1.420033', 'avc1.42002a', 'avc1.4d0033'] : ['vp09.00.10.08', 'vp8'];
   for (const codec of codecs) {
     const config = { codec, width: w, height: h, framerate: fps, bitrate: Math.max(2000000, Math.min(20000000, Math.round(w * h * fps * .25))), hardwareAcceleration: 'no-preference' };
     if (format === 'mp4') config.avc = { format: 'avc' };
     try { if ((await VideoEncoder.isConfigSupported(config)).supported) return config; } catch {}
   }
-  throw new Error(format === 'mp4' ? 'Кодировщик MP4 / H.264 недоступен. Выберите WebM или уменьшите разрешение.' : 'Кодировщик WebM недоступен. Уменьшите разрешение или выберите GIF.');
+  throw localizedError(format === 'mp4' ? 'mp4Unavailable' : 'webmUnavailable');
 }
 async function exportVideo(format, w, h, frames, fps, start, dir) {
   const config = await selectVideoConfig(format, w, h, fps); checkCancel();
@@ -282,9 +309,9 @@ async function exportVideo(format, w, h, frames, fps, start, dir) {
       try { encoder.encode(frame, { keyFrame: i % (fps * 2) === 0 }); } finally { frame.close(); }
       // Bounded queue: never keep a full animation's uncompressed frames in RAM.
       if (encoder.encodeQueueSize >= 6) await encoder.flush();
-      progress(.95 * (i + 1) / frames, `${format.toUpperCase()}: кадр ${i + 1} из ${frames}`); await tick();
+      progress(.95 * (i + 1) / frames, 'frameProgress', { format: format.toUpperCase(), frame: i + 1, frames }); await tick();
     }
-    checkCancel(); progress(.98, 'Собираю видеофайл…'); await encoder.flush();
+    checkCancel(); progress(.98, 'muxing'); await encoder.flush();
     if (codecError) throw codecError; checkCancel(); muxer.finalize();
     if (!isMP4) setWebMDuration(target.buffer, frames / fps);
     return new Blob([target.buffer], { type: isMP4 ? 'video/mp4' : 'video/webm' });
@@ -293,29 +320,29 @@ async function exportVideo(format, w, h, frames, fps, start, dir) {
 async function startExport() {
   if (busy || loading || !currentModel) return;
   const format = $('format').value, [w, h] = dimensions(), fps = Number($('fps').value), seconds = Number($('duration').value), frames = fps * seconds;
-  if (format === 'gif' && Math.max(w, h) > 1080) { status('Для GIF выберите размер до 1080 px. Большие размеры доступны для PNG и видео.', true); return; }
-  if (format === 'gif' && frames > 300) { status('Для GIF доступно до 300 кадров. Уменьшите длительность или частоту кадров.', true); return; }
+  if (format === 'gif' && Math.max(w, h) > 1080) { status('gifSizeLimit', {}, true); return; }
+  if (format === 'gif' && frames > 300) { status('gifFrameLimit', {}, true); return; }
   const gl = renderer.getContext();
-  if (Math.max(w, h) > gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)) { status('Видеокарта не поддерживает выбранный размер.', true); return; }
+  if (Math.max(w, h) > gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)) { status('gpuSizeLimit', {}, true); return; }
   busy = true; lockUI(true); exportJob = { cancel: false, worker: null, encoder: null, reject: null };
   const oldAngle = spin.rotation.y, pixelRatio = renderer.getPixelRatio();
   const start = -rad(Number($('angle').value)), dir = Number($('direction').value);
-  $('progress-box').hidden = false; status('Экспорт выполняется на вашем компьютере…'); progress(0, 'Подготовка…');
+  $('progress-box').hidden = false; status('exporting'); progress(0, 'prepare');
   try {
     renderer.setPixelRatio(1); renderer.setSize(w, h, false); setProjection(w / h); await tick();
     let blob;
     if (format === 'png') {
       updateAppearance(); renderer.render(scene, camera);
-      blob = await new Promise((resolve, reject) => renderer.domElement.toBlob((b) => b ? resolve(b) : reject(new Error('Не удалось создать PNG.')), 'image/png'));
+      blob = await new Promise((resolve, reject) => renderer.domElement.toBlob((b) => b ? resolve(b) : reject(localizedError('pngFailed')), 'image/png'));
     } else if (format === 'gif') blob = await exportGIF(w, h, frames, fps, start, dir);
     else blob = await exportVideo(format, w, h, frames, fps, start, dir);
     checkCancel();
-    saveResult(blob, format, `${w} × ${h}${format === 'png' ? '' : ` · ${seconds} сек. · ${fps} кадров/с`}`);
-    status(`Готово: ${format.toUpperCase()} создан. Файл появится в загрузках браузера. Ссылка ниже позволяет скачать его повторно.`);
-    progress(1, 'Готово');
+    saveResult(blob, format, { w, h, seconds, fps });
+    status('exportDone', { format: format.toUpperCase() });
+    progress(1, 'done');
   } catch (e) {
-    if (exportJob.cancel || e.name === 'AbortError') status('Экспорт отменён. Можно изменить настройки и запустить снова.');
-    else status(`Ошибка экспорта: ${e.message}`, true);
+    if (exportJob.cancel || e.name === 'AbortError') status('exportCancelled');
+    else status('exportFailed', { error: e }, true);
   } finally {
     exportJob.worker?.terminate(); exportJob = null;
     spin.rotation.y = oldAngle; busy = false; renderer.setPixelRatio(pixelRatio);
@@ -324,13 +351,14 @@ async function startExport() {
 }
 function updateExportNote() {
   const f = $('format').value;
-  $('export').textContent = `↓ Сохранить ${f.toUpperCase()}`;
-  $('export-note').textContent = f === 'gif' ? 'GIF: бесконечный цикл, до 1080 px и 300 кадров. Рекомендуем 720 px / 5 сек. / 20 кадров/с.' : f === 'png' ? 'PNG сохраняет текущий кадр. Прозрачный фон и полупрозрачная тень поддерживаются.' : `${f.toUpperCase()}: один полный оборот, без звука. Прозрачность заменяется выбранным цветом фона.${f === 'mp4' ? ' Если H.264 недоступен, выберите WebM.' : ''}`;
+  $('export').textContent = t('saveFormat', { format: f.toUpperCase() });
+  $('export-note').textContent = f === 'gif' ? t('gifNote') : f === 'png' ? t('pngNote') : t('videoNote', { format: f.toUpperCase() }) + (f === 'mp4' ? ' ' + t('mp4Fallback') : '');
 }
 
+$('language').onchange = () => { setLanguage($('language').value); refreshLanguage(); };
 $('open').onclick = () => $('file').click();
 $('file').onchange = (e) => loadFile(e.target.files[0]);
-$('demo').onclick = () => { loadDemo(); status('Открыта демонстрационная ладья. Можно попробовать любой формат экспорта.'); };
+$('demo').onclick = () => { loadDemo(); status('demoReady'); };
 for (const axis of ['x', 'y', 'z']) $('rot-' + axis).onclick = () => {
   const vector = new THREE.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
   orientation.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(vector, Math.PI / 2));
@@ -368,8 +396,8 @@ document.addEventListener('dragover', (e) => e.preventDefault());
 document.addEventListener('dragleave', (e) => { e.preventDefault(); if (--dragDepth <= 0) { dragDepth = 0; $('dropzone').classList.remove('drag-over'); } });
 document.addEventListener('drop', (e) => { e.preventDefault(); dragDepth = 0; $('dropzone').classList.remove('drag-over'); loadFile(e.dataTransfer.files[0]); });
 window.addEventListener('beforeunload', (e) => { if (busy) { e.preventDefault(); e.returnValue = ''; } });
-$('canvas').addEventListener('webglcontextlost', (e) => { e.preventDefault(); if (exportJob) $('cancel').click(); status('Потеряна связь с видеокартой. После восстановления обновите окно приложения.', true); });
-document.addEventListener('visibilitychange', () => { if (busy && document.hidden) status('Экспорт продолжается. Не закрывайте окно; в фоновом режиме он может идти медленнее.'); });
+$('canvas').addEventListener('webglcontextlost', (e) => { e.preventDefault(); if (exportJob) $('cancel').click(); status('contextLost', {}, true); });
+document.addEventListener('visibilitychange', () => { if (busy && document.hidden) status('exportBackground'); });
 
 loadDemo(); resetView(); updateAppearance(); updateLabels(); updateExportNote(); setPlaying(playing);
 function animate(now) {

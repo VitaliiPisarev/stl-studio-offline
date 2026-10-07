@@ -1,4 +1,4 @@
-STL Studio Offline 1.0 — third-party licenses
+STL Studio Offline 1.1.0 — third-party licenses
 
 
 --- three 0.180.0 ---

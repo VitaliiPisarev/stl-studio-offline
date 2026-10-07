@@ -1,4 +1,24 @@
-﻿STL Studio Offline 1.0 — проверка 07.10.2026
+﻿STL Studio Offline 1.1 — localization checks, 2026-10-07
+
+Passed offline in Chromium 138:
+- Russian regression: ASCII/binary STL, OBJ, PNG, GIF, MP4 and WebM;
+- English UI, help, accessibility labels, progress and errors;
+- English PNG/GIF/H.264 MP4/VP9 WebM exports;
+- switching preserves model pixels, camera and appearance;
+- existing error messages and result information retranslate;
+- filenames and download links remain unchanged;
+- language is restored after reloading a local file;
+- switching works when localStorage is blocked;
+- language control remains visible in narrow layouts;
+- no HTTP requests or unhandled JavaScript errors.
+
+UI checked visually in English on desktop and in a narrow window.
+Language changes use bundled catalogs: no external translation services.
+
+Previous release checks follow. The Windows confirmation below refers to v1.0;
+v1.1 was tested in Chromium on Linux. The Windows launcher is unchanged.
+
+STL Studio Offline 1.0 — проверка 07.10.2026
 
 Среда: Chromium 138, Linux, запуск HTML через file://, сеть отключена.
 

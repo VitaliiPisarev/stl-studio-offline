@@ -12,7 +12,8 @@ const app = await build({ entryPoints: ['src/app.js'], bundle: true, minify: tru
 const html = (await fs.readFile('src/index.html', 'utf8')).replace('/*__STYLE__*/', await fs.readFile('src/style.css', 'utf8')).replace('/*__APP__*/', () => app.outputFiles[0].text.replaceAll('</script', '<\\/script'));
 await fs.mkdir('dist', { recursive: true });
 await fs.writeFile('dist/STL_Studio_Offline.html', html);
-let notices = 'STL Studio Offline 1.0 — third-party licenses\n\n';
+const { version } = JSON.parse(await fs.readFile('package.json', 'utf8'));
+let notices = `STL Studio Offline ${version} — third-party licenses\n\n`;
 for (const pkg of ['three', 'gifenc', 'mp4-muxer', 'webm-muxer']) {
   const info = JSON.parse(await fs.readFile(`node_modules/${pkg}/package.json`, 'utf8'));
   const entries = await fs.readdir(`node_modules/${pkg}`);

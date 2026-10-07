@@ -7,7 +7,7 @@
     "webm-muxer": "5.1.4"
   },
   "name": "stl-studio-offline",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Offline STL/OBJ turntable exporter for Windows browsers",
   "scripts": {
