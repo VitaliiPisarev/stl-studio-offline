@@ -1,0 +1,16 @@
+{
+  "dependencies": {
+    "esbuild": "0.25.10",
+    "gifenc": "1.0.3",
+    "mp4-muxer": "5.2.2",
+    "three": "0.180.0",
+    "webm-muxer": "5.1.4"
+  },
+  "name": "stl-studio-offline",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline STL/OBJ turntable exporter for Windows browsers",
+  "scripts": {
+    "build": "node build.mjs"
+  }
+}
